@@ -119,9 +119,55 @@ the `chaos-result` artifact name.
                                   +-------------------+
 ```
 
+## Worker registry
+
+The controller reads `worker_registry.yaml` at startup and routes
+`POST /v1/jobs` requests to the matching entry by `worker_name`. Three
+workers ship in the box:
+
+| `worker_name` | What it computes                                    | State-file magic |
+| ------------- | --------------------------------------------------- | ---------------- |
+| `primes`      | Streaming odd-trial-division prime sieve.           | `JOBC` / v2      |
+| `matmul`      | NxN integer matrix multiply, fingerprint of cells.  | `MMUL` / v1      |
+| `wordcount`   | Streaming word counter over a procedural corpus.    | `WCNT` / v1      |
+
+```bash
+curl -s -X POST localhost:8080/v1/jobs -H 'content-type: application/json' \
+  -d '{"worker_name": "matmul", "limit": 200, "seed": 42, "checkpoint_every": 1000}'
+```
+
+`limit` is the worker-specific size knob: `--limit` for primes (sieve
+upper bound), `n` for matmul (square dimension), `words_total` for
+wordcount.
+
+### Adding a worker
+
+1. Implement a deterministic `run(state, every, callback)` plus
+   `read_state` / `write_state` with the same atomic-write/CRC pattern
+   used by `worker/src/checkpoint.cpp`. Pick a unique 4-byte magic.
+2. Wire it into the dispatch in `worker/src/main.cpp` under a new
+   `--worker <name>` value.
+3. Add a `(name, image, command, checkpoint_interval, schema_version)`
+   entry to `worker_registry.yaml`.
+4. Add a GoogleTest unit suite covering at minimum:
+   determinism-across-cadences, resume-from-mid-run, CRC corruption
+   rejection, write/read roundtrip.
+5. Add the worker name to the `cases` list in
+   `internal/registry/chaos_recovery_test.go` so the chaos-recovery
+   integration test exercises it.
+
+The contract every worker must honour:
+
+- **Deterministic given fixed inputs.** A resumed run must produce a
+  byte-identical state file to a non-resumed run with the same args.
+- **Atomic state writes.** `write tmp; fsync; rename`.
+- **Self-describing state file.** Magic + version + length-prefixed body
+  + trailing CRC32 (IEEE).
+- **Periodic checkpoint emissions.** One every `checkpoint_every` units
+  of work plus a final emission at completion.
+
 ## What this is *not*
 
-- **Distributed.** Single controller; no leader election, no failover peer.
 - **Exactly-once at network boundaries.** Only the local checkpoint
   protocol gives that guarantee, and only between the worker and SQLite.
 - **Wired to real hardware-fault sources.** `SIGUSR1` is the simulated

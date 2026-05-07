@@ -14,6 +14,8 @@ add_compile_options(-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Werror
 add_library(jobworker_core STATIC
   src/compute.cpp
   src/checkpoint.cpp
+  src/matmul.cpp
+  src/wordcount.cpp
 )
 target_include_directories(jobworker_core PUBLIC src)
 target_compile_features(jobworker_core PUBLIC cxx_std_20)
@@ -38,6 +40,8 @@ if(BUILD_WORKER_TESTS)
     tests/test_compute.cpp
     tests/test_checkpoint.cpp
     tests/test_resume_property.cpp
+    tests/test_matmul.cpp
+    tests/test_wordcount.cpp
   )
   target_link_libraries(jobworker_tests PRIVATE jobworker_core GTest::gtest_main)
   target_compile_features(jobworker_tests PRIVATE cxx_std_20)

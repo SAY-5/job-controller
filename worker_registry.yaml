@@ -1,0 +1,34 @@
+# worker_registry.yaml
+#
+# Declarative registry of available worker types. The controller reads this
+# file at startup and routes POST /v1/jobs requests to the matching entry
+# by `worker_name`. Adding a new worker means appending an entry here and
+# implementing the C++ compute backend (see README.md "Adding a worker").
+#
+# Schema:
+#   worker_name         -- short identifier referenced in API requests
+#   image               -- Docker image to launch (jobctl/worker:* by default)
+#   command             -- entrypoint inside the container; controller appends
+#                          --worker / --limit / --checkpoint-every / --output-state
+#   checkpoint_interval -- default --checkpoint-every value when the API
+#                          request omits one
+#   schema_version      -- registry-side schema version, bumped when the
+#                          state-file layout changes incompatibly
+workers:
+  - worker_name: primes
+    image: jobctl/worker:latest
+    command: /usr/local/bin/jobworker
+    checkpoint_interval: 5000
+    schema_version: 2
+
+  - worker_name: matmul
+    image: jobctl/worker:latest
+    command: /usr/local/bin/jobworker
+    checkpoint_interval: 1000
+    schema_version: 1
+
+  - worker_name: wordcount
+    image: jobctl/worker:latest
+    command: /usr/local/bin/jobworker
+    checkpoint_interval: 1000
+    schema_version: 1

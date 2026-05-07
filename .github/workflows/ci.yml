@@ -81,6 +81,23 @@ jobs:
             echo "::endgroup::"
           done
 
+  registry-chaos:
+    runs-on: ubuntu-latest
+    needs: [build-cpp]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - name: build worker
+        run: |
+          cmake -B worker/build -S worker -DCMAKE_BUILD_TYPE=Release -DBUILD_WORKER_TESTS=OFF
+          cmake --build worker/build -j --target jobworker
+      - name: chaos-recovery for registry workers
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 -timeout=180s -v ./internal/registry/ -run TestChaosRecovery
+
   bench-smoke:
     runs-on: ubuntu-latest
     needs: [build-cpp]

@@ -17,6 +17,7 @@ import (
 	"github.com/SAY-5/job-controller/internal/config"
 	"github.com/SAY-5/job-controller/internal/docker"
 	"github.com/SAY-5/job-controller/internal/recovery"
+	"github.com/SAY-5/job-controller/internal/registry"
 	"github.com/SAY-5/job-controller/internal/signals"
 	"github.com/SAY-5/job-controller/internal/store"
 	"github.com/SAY-5/job-controller/internal/supervisor"
@@ -82,9 +83,19 @@ func main() {
 			res.Reattached, res.MarkedResumable, res.MarkedUnresumable, res.ResumeScheduled)
 	}
 
+	// Worker registry: try worker_registry.yaml in CWD, fall back to the
+	// embedded default. Logged either way so operators can confirm.
+	reg, regErr := registry.LoadFile("worker_registry.yaml")
+	if regErr != nil {
+		log.Printf("controller: worker_registry.yaml not loaded (%v); using embedded default", regErr)
+		reg = registry.Default()
+	} else {
+		log.Printf("controller: worker registry loaded: %v", reg.Names())
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.NewServer(cfg, st, dc, sup).Handler(),
+		Handler:           api.NewServer(cfg, st, dc, sup, reg).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

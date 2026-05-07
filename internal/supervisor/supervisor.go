@@ -114,10 +114,14 @@ func (s *Supervisor) Start(ctx context.Context, jobID string) error {
 	hostStateFile := filepath.Join(hostStateDir, filepath.Base(containerStatePath))
 
 	cmd := []string{
+		"--worker", argOr(job.Args, "--worker", "primes"),
 		"--job-id", jobID,
 		"--limit", argOr(job.Args, "--limit", "100000"),
 		"--checkpoint-every", argOr(job.Args, "--checkpoint-every", "5000"),
 		"--output-state", containerStatePath,
+	}
+	if v := argOr(job.Args, "--seed", ""); v != "" {
+		cmd = append(cmd, "--seed", v)
 	}
 	if v := argOr(job.Args, "--sleep-per-checkpoint-ms", ""); v != "" {
 		cmd = append(cmd, "--sleep-per-checkpoint-ms", v)

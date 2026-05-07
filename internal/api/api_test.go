@@ -31,7 +31,7 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 		NoDocker:        true,
 	}
 	sup := supervisor.New(cfg, st, nil)
-	return NewServer(cfg, st, nil, sup), st
+	return NewServer(cfg, st, nil, sup, nil), st
 }
 
 func TestHealthzReportsSqliteOk(t *testing.T) {

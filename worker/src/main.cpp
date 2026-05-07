@@ -1,7 +1,16 @@
+// jobworker dispatches to one of three compute backends based on
+// `--worker`: `primes` (default, the original sieve), `matmul`, or
+// `wordcount`. All three share the same atomic-write/CRC-checked state
+// file pattern; their on-disk layouts are documented in their respective
+// headers (compute.h / matmul.h / wordcount.h).
+//
+// The controller is decoupled from this dispatch via the registry
+// (cmd/controller reads worker_registry.yaml at startup and forwards
+// the worker_name from the API request).
+
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -11,22 +20,25 @@
 
 #include "checkpoint.h"
 #include "compute.h"
+#include "matmul.h"
+#include "wordcount.h"
 
 namespace {
 
 struct Args {
+  std::string worker = "primes";
   std::string job_id;
   std::uint64_t limit = 100000;
   std::uint64_t checkpoint_every = 5000;
-  std::uint64_t sleep_per_checkpoint_ms = 0;  // optional pacing for chaos tests
+  std::uint64_t sleep_per_checkpoint_ms = 0;
+  std::uint64_t seed = 1;
   std::string output_state;
   std::optional<std::string> resume_from;
 };
 
 void print_usage() {
-  std::cerr << "usage: jobworker --job-id ID --limit N "
-               "[--checkpoint-every K] [--output-state PATH] "
-               "[--resume-from PATH]\n";
+  std::cerr << "usage: jobworker [--worker primes|matmul|wordcount] --job-id ID --limit N "
+               "[--checkpoint-every K] [--seed S] [--output-state PATH] [--resume-from PATH]\n";
 }
 
 bool parse_u64(const std::string& s, std::uint64_t& out) {
@@ -49,7 +61,11 @@ bool parse_args(int argc, char** argv, Args& a) {
       }
       return argv[++i];
     };
-    if (k == "--job-id") {
+    if (k == "--worker") {
+      const char* v = need("--worker");
+      if (!v) return false;
+      a.worker = v;
+    } else if (k == "--job-id") {
       const char* v = need("--job-id");
       if (!v) return false;
       a.job_id = v;
@@ -70,6 +86,9 @@ bool parse_args(int argc, char** argv, Args& a) {
     } else if (k == "--sleep-per-checkpoint-ms") {
       const char* v = need("--sleep-per-checkpoint-ms");
       if (!v || !parse_u64(v, a.sleep_per_checkpoint_ms)) return false;
+    } else if (k == "--seed") {
+      const char* v = need("--seed");
+      if (!v || !parse_u64(v, a.seed)) return false;
     } else if (k == "--help" || k == "-h") {
       print_usage();
       std::exit(0);
@@ -85,35 +104,21 @@ bool parse_args(int argc, char** argv, Args& a) {
   return true;
 }
 
-// Emit a checkpoint event as a JSON line to stdout. Recent primes are
-// serialized as a JSON array; the controller persists the latest payload.
-void emit_event_line(const std::string& job_id, const jobworker::CheckpointEvent& ev,
-                     const std::string& state_path) {
+void emit_checkpoint(const std::string& job_id, std::uint64_t epoch, double progress,
+                     std::uint64_t found, std::uint64_t cursor, const std::string& state_path) {
   std::ostringstream o;
-  o << "{\"type\":\"checkpoint\",\"job_id\":\"" << job_id << "\",\"epoch\":" << ev.epoch
-    << ",\"progress\":" << ev.progress << ",\"found\":" << ev.found << ",\"next\":" << ev.next
-    << ",\"state_path\":\"" << state_path << "\",\"recent\":[";
-  for (std::size_t i = 0; i < ev.recent.size(); ++i) {
-    if (i) o << ",";
-    o << ev.recent[i];
-  }
-  o << "]}";
-  std::cout << o.str() << std::endl;  // flush so the controller sees it
+  o << "{\"type\":\"checkpoint\",\"job_id\":\"" << job_id << "\",\"epoch\":" << epoch
+    << ",\"progress\":" << progress << ",\"found\":" << found << ",\"next\":" << cursor
+    << ",\"state_path\":\"" << state_path << "\"}";
+  std::cout << o.str() << std::endl;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
-  Args args;
-  if (!parse_args(argc, argv, args)) return 2;
-
+int run_primes(const Args& args) {
   jobworker::SieveState state;
   state.limit = args.limit;
-
   if (args.resume_from) {
     try {
       state = jobworker::read_state(*args.resume_from);
-      // Resume must respect the original limit; refuse if mismatched.
       if (state.limit != args.limit) {
         std::cerr << "resume limit mismatch: file=" << state.limit << " arg=" << args.limit << "\n";
         return 3;
@@ -123,11 +128,9 @@ int main(int argc, char** argv) {
       return 4;
     }
   }
-
-  // Emit a starting line so the controller knows we're alive.
-  std::cout << "{\"type\":\"started\",\"job_id\":\"" << args.job_id << "\",\"limit\":" << args.limit
-            << ",\"resume_from_epoch\":" << state.epoch << "}" << std::endl;
-
+  std::cout << "{\"type\":\"started\",\"job_id\":\"" << args.job_id << "\",\"worker\":\"primes\""
+            << ",\"limit\":" << args.limit << ",\"resume_from_epoch\":" << state.epoch << "}"
+            << std::endl;
   jobworker::run_sieve(state, args.checkpoint_every, [&](const jobworker::CheckpointEvent& ev) {
     try {
       jobworker::write_state(args.output_state, state);
@@ -135,13 +138,104 @@ int main(int argc, char** argv) {
       std::cerr << "checkpoint write failed: " << e.what() << "\n";
       std::exit(5);
     }
-    emit_event_line(args.job_id, ev, args.output_state);
+    emit_checkpoint(args.job_id, ev.epoch, ev.progress, ev.found, ev.next, args.output_state);
     if (args.sleep_per_checkpoint_ms > 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(args.sleep_per_checkpoint_ms));
     }
   });
-
   std::cout << "{\"type\":\"completed\",\"job_id\":\"" << args.job_id
-            << "\",\"found\":" << state.found << ",\"epoch\":" << state.epoch << "}" << std::endl;
+            << "\",\"worker\":\"primes\",\"found\":" << state.found << ",\"epoch\":" << state.epoch
+            << "}" << std::endl;
   return 0;
+}
+
+int run_matmul(const Args& args) {
+  jobworker::matmul::MatMulState state;
+  state.n = args.limit;
+  state.seed = args.seed;
+  if (args.resume_from) {
+    try {
+      state = jobworker::matmul::read_state(*args.resume_from);
+      if (state.n != args.limit || state.seed != args.seed) {
+        std::cerr << "matmul: resume parameters mismatch\n";
+        return 3;
+      }
+    } catch (const jobworker::CheckpointError& e) {
+      std::cerr << "matmul checkpoint error: " << e.what() << "\n";
+      return 4;
+    }
+  }
+  std::cout << "{\"type\":\"started\",\"job_id\":\"" << args.job_id << "\",\"worker\":\"matmul\""
+            << ",\"n\":" << state.n << ",\"seed\":" << state.seed
+            << ",\"resume_from_epoch\":" << state.epoch << "}" << std::endl;
+  jobworker::matmul::run(
+      state, args.checkpoint_every, [&](const jobworker::matmul::MatMulEvent& ev) {
+        try {
+          jobworker::matmul::write_state(args.output_state, state);
+        } catch (const jobworker::CheckpointError& e) {
+          std::cerr << "matmul write failed: " << e.what() << "\n";
+          std::exit(5);
+        }
+        emit_checkpoint(args.job_id, ev.epoch, ev.progress, ev.found, ev.next_cell,
+                        args.output_state);
+        if (args.sleep_per_checkpoint_ms > 0) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(args.sleep_per_checkpoint_ms));
+        }
+      });
+  std::cout << "{\"type\":\"completed\",\"job_id\":\"" << args.job_id
+            << "\",\"worker\":\"matmul\",\"found\":" << state.fingerprint
+            << ",\"epoch\":" << state.epoch << "}" << std::endl;
+  return 0;
+}
+
+int run_wordcount(const Args& args) {
+  jobworker::wordcount::WordCountState state;
+  state.seed = args.seed;
+  state.words_total = args.limit;
+  if (args.resume_from) {
+    try {
+      state = jobworker::wordcount::read_state(*args.resume_from);
+      if (state.words_total != args.limit || state.seed != args.seed) {
+        std::cerr << "wordcount: resume parameters mismatch\n";
+        return 3;
+      }
+    } catch (const jobworker::CheckpointError& e) {
+      std::cerr << "wordcount checkpoint error: " << e.what() << "\n";
+      return 4;
+    }
+  }
+  std::cout << "{\"type\":\"started\",\"job_id\":\"" << args.job_id
+            << "\",\"worker\":\"wordcount\",\"words_total\":" << state.words_total
+            << ",\"seed\":" << state.seed << ",\"resume_from_epoch\":" << state.epoch << "}"
+            << std::endl;
+  jobworker::wordcount::run(
+      state, args.checkpoint_every, [&](const jobworker::wordcount::WordCountEvent& ev) {
+        try {
+          jobworker::wordcount::write_state(args.output_state, state);
+        } catch (const jobworker::CheckpointError& e) {
+          std::cerr << "wordcount write failed: " << e.what() << "\n";
+          std::exit(5);
+        }
+        emit_checkpoint(args.job_id, ev.epoch, ev.progress, ev.found, ev.next_word,
+                        args.output_state);
+        if (args.sleep_per_checkpoint_ms > 0) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(args.sleep_per_checkpoint_ms));
+        }
+      });
+  std::cout << "{\"type\":\"completed\",\"job_id\":\"" << args.job_id
+            << "\",\"worker\":\"wordcount\",\"found\":" << jobworker::wordcount::counts_hash(state)
+            << ",\"epoch\":" << state.epoch << "}" << std::endl;
+  return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  Args args;
+  if (!parse_args(argc, argv, args)) return 2;
+  if (args.worker == "primes") return run_primes(args);
+  if (args.worker == "matmul") return run_matmul(args);
+  if (args.worker == "wordcount") return run_wordcount(args);
+  std::cerr << "unknown worker: " << args.worker << " (want primes|matmul|wordcount)\n";
+  return 2;
 }

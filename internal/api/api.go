@@ -16,6 +16,7 @@ import (
 
 	"github.com/SAY-5/job-controller/internal/config"
 	"github.com/SAY-5/job-controller/internal/docker"
+	"github.com/SAY-5/job-controller/internal/registry"
 	"github.com/SAY-5/job-controller/internal/store"
 	"github.com/SAY-5/job-controller/internal/supervisor"
 
@@ -28,10 +29,16 @@ type Server struct {
 	store      *store.Store
 	docker     *docker.Client
 	supervisor *supervisor.Supervisor
+	registry   *registry.Registry
 }
 
-func NewServer(cfg config.Config, st *store.Store, dc *docker.Client, sup *supervisor.Supervisor) *Server {
-	return &Server{cfg: cfg, store: st, docker: dc, supervisor: sup}
+// NewServer constructs the API server. reg may be nil; in that case the
+// embedded default registry (primes / matmul / wordcount) is used.
+func NewServer(cfg config.Config, st *store.Store, dc *docker.Client, sup *supervisor.Supervisor, reg *registry.Registry) *Server {
+	if reg == nil {
+		reg = registry.Default()
+	}
+	return &Server{cfg: cfg, store: st, docker: dc, supervisor: sup, registry: reg}
 }
 
 // Handler returns the wired-up http.Handler with middleware applied.
@@ -53,11 +60,13 @@ type errorEnvelope struct {
 }
 
 type createJobRequest struct {
+	WorkerName           string   `json:"worker_name"`
 	Image                string   `json:"image"`
 	Command              string   `json:"command"`
 	Args                 []string `json:"args"`
 	CheckpointEvery      int      `json:"checkpoint_every"`
 	Limit                int64    `json:"limit"`
+	Seed                 int64    `json:"seed"`
 	SleepPerCheckpointMs int      `json:"sleep_per_checkpoint_ms"`
 }
 
@@ -141,23 +150,48 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve worker_name through the registry. Empty defaults to "primes"
+	// for backwards compatibility with pre-v4 clients.
+	workerName := req.WorkerName
+	if workerName == "" {
+		workerName = "primes"
+	}
+	worker, err := s.registry.Lookup(workerName)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "unknown_worker", err.Error(), false)
+		return
+	}
+
 	image := req.Image
 	if image == "" {
-		image = s.cfg.DefaultImage
+		image = worker.Image
+		if image == "" {
+			image = s.cfg.DefaultImage
+		}
 	}
-	args := req.Args
+	args := append([]string{"--worker", workerName}, req.Args...)
 	if req.Limit > 0 {
 		args = append(args, "--limit", strconv.FormatInt(req.Limit, 10))
 	}
-	if req.CheckpointEvery > 0 {
-		args = append(args, "--checkpoint-every", strconv.Itoa(req.CheckpointEvery))
+	checkpointEvery := req.CheckpointEvery
+	if checkpointEvery == 0 {
+		checkpointEvery = worker.CheckpointInterval
+	}
+	if checkpointEvery > 0 {
+		args = append(args, "--checkpoint-every", strconv.Itoa(checkpointEvery))
+	}
+	if req.Seed > 0 {
+		args = append(args, "--seed", strconv.FormatInt(req.Seed, 10))
 	}
 	if req.SleepPerCheckpointMs > 0 {
 		args = append(args, "--sleep-per-checkpoint-ms", strconv.Itoa(req.SleepPerCheckpointMs))
 	}
 	command := req.Command
 	if command == "" {
-		command = "/usr/local/bin/jobworker"
+		command = worker.Command
+		if command == "" {
+			command = "/usr/local/bin/jobworker"
+		}
 	}
 
 	id := uuid.NewString()
