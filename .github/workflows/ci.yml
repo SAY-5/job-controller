@@ -1,0 +1,100 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.59.1
+          args: --timeout=5m
+
+  lint-cpp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - name: dry-run check
+        run: |
+          find worker/src worker/tests -type f \( -name '*.cpp' -o -name '*.h' \) -print0 \
+            | xargs -0 clang-format --dry-run -Werror
+
+  build-cpp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cmake configure
+        run: cmake -B build -S worker -DCMAKE_BUILD_TYPE=Release
+      - name: cmake build
+        run: cmake --build build -j
+      - name: ctest
+        run: cd build && ctest --output-on-failure
+
+  test-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - name: go test
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -20
+
+  chaos-smoke:
+    runs-on: ubuntu-latest
+    needs: [build-cpp, test-go]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - name: build worker
+        run: |
+          cmake -B worker/build -S worker -DCMAKE_BUILD_TYPE=Release -DBUILD_WORKER_TESTS=OFF
+          cmake --build worker/build -j --target jobworker
+      - name: build controller binary
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          mkdir -p bin
+          go build -o bin/controller ./cmd/controller
+          go build -o bin/reaper ./cmd/reaper
+      - name: build worker docker image
+        run: docker build -f infra/Dockerfile.worker -t jobctl/worker:dev .
+      - name: run chaos.sh
+        env:
+          CHAOS_LIMIT: "300000"
+          CHAOS_CHECKPOINT_EVERY_PRIMES: "2000"
+          CHAOS_SLEEP_PER_CHECKPOINT_MS: "100"
+          WORKER_IMAGE: jobctl/worker:dev
+        run: bash bench/chaos.sh
+      - name: assert deterministic_match
+        run: |
+          jq -e '.deterministic_match == true' bench/runtime/chaos-result.json
+      - name: upload chaos artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-result
+          path: |
+            bench/runtime/chaos-result.json
+            bench/runtime/controller.log
+            bench/runtime/controller.restart.log

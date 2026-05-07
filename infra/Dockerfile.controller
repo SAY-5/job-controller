@@ -1,0 +1,25 @@
+# Builder stage: compile the controller. CGO is required for go-sqlite3.
+FROM golang:1.22-bookworm AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gcc libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ENV CGO_ENABLED=1
+RUN go build -trimpath -o /out/controller ./cmd/controller
+RUN go build -trimpath -o /out/reaper ./cmd/reaper
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates docker.io \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /out/controller /usr/local/bin/controller
+COPY --from=builder /out/reaper /usr/local/bin/reaper
+ENV JOBCTL_DB=/var/lib/jobctl/jobs.db \
+    JOBCTL_HOST_STATE_DIR=/var/lib/jobctl/state \
+    JOBCTL_LISTEN=:8080
+VOLUME ["/var/lib/jobctl"]
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/controller"]

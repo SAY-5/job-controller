@@ -1,0 +1,33 @@
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.controller
+    image: jobctl/controller:dev
+    environment:
+      JOBCTL_LISTEN: ":8080"
+      JOBCTL_DB: "/var/lib/jobctl/jobs.db"
+      JOBCTL_WORKER_IMAGE: "jobctl/worker:dev"
+      JOBCTL_HOST_STATE_DIR: "/var/lib/jobctl/state"
+    ports:
+      - "8080:8080"
+    volumes:
+      # Share the daemon so the controller can spawn worker containers as
+      # siblings. Documented as the dev-only mode in README.
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "jobctl-data:/var/lib/jobctl"
+    depends_on:
+      - worker-image-build
+
+  # Sidecar that exists only to ensure the worker image is built locally
+  # before the controller tries to pull it.
+  worker-image-build:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.worker
+    image: jobctl/worker:dev
+    command: ["--help"]
+    restart: "no"
+
+volumes:
+  jobctl-data:

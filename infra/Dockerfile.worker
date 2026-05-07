@@ -1,0 +1,23 @@
+# Multi-stage: build the C++ worker on Debian, ship a minimal runtime image.
+FROM debian:bookworm-slim AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY worker/ ./worker/
+RUN cmake -B /build -S worker \
+      -DCMAKE_BUILD_TYPE=Release -DBUILD_WORKER_TESTS=OFF \
+    && cmake --build /build -j"$(nproc)" --target jobworker
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libstdc++6 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/jobworker /usr/local/bin/jobworker
+# The worker runs as root inside the container so it can write to bind-mounted
+# host directories regardless of host UID. Capabilities are dropped by the
+# controller via `--cpus`, `--memory`, `--pids-limit`, and the default Docker
+# seccomp profile; this is a CPU-bound process with no network or device need.
+RUN mkdir -p /state
+WORKDIR /state
+ENTRYPOINT ["/usr/local/bin/jobworker"]

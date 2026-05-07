@@ -1,0 +1,13 @@
+{
+  "kills": 1,
+  "jobs": 1,
+  "limit": 300000,
+  "checkpoint_every": 2000,
+  "deterministic_match": true,
+  "reference_found": 25997,
+  "job_found": 25997,
+  "worker_alive_after_kill": 1,
+  "post_kill_completion_seconds": 5,
+  "controller_recovery_seconds": 0,
+  "wall_clock_seconds": 6
+}

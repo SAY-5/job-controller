@@ -1,0 +1,30 @@
+# Go
+/bin/
+/dist/
+*.test
+*.out
+coverage.out
+
+# CMake / C++ build
+worker/build/
+build/
+*.o
+*.obj
+
+# SQLite WAL artifacts
+*.db
+*.db-wal
+*.db-shm
+
+# Chaos / runtime artifacts (the committed chaos-result.json sits at bench/
+# top level and is intentionally tracked).
+bench/runtime/
+bench/runtime-sigterm/
+bench/work/
+*.pid
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
