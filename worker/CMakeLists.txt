@@ -37,6 +37,7 @@ if(BUILD_WORKER_TESTS)
   add_executable(jobworker_tests
     tests/test_compute.cpp
     tests/test_checkpoint.cpp
+    tests/test_resume_property.cpp
   )
   target_link_libraries(jobworker_tests PRIVATE jobworker_core GTest::gtest_main)
   target_compile_features(jobworker_tests PRIVATE cxx_std_20)

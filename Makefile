@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: dev build build-go build-cpp test test-go test-cpp lint lint-go lint-cpp chaos chaos-sigterm up clean
+.PHONY: dev build build-go build-cpp test test-go test-cpp lint lint-go lint-cpp chaos chaos-sigterm fuzz coverage-gate up clean
 
 # Local dev build (Go binaries + C++ worker)
 dev: build
@@ -41,6 +41,23 @@ lint-cpp:
 	else \
 	  echo "clang-format not installed; skipping (CI runs the real check)" ; \
 	fi
+
+# Quick fuzz pass on the WAL/checkpoint parser. CI invokes this with a
+# short fuzztime; locally bump FUZZTIME to spend more time per target.
+FUZZTIME ?= 15s
+fuzz:
+	go test -run='^$$' -fuzz=FuzzParse -fuzztime=$(FUZZTIME) ./internal/checkpoint
+	go test -run='^$$' -fuzz=FuzzEncodeParseRoundtrip -fuzztime=$(FUZZTIME) ./internal/checkpoint
+	go test -run='^$$' -fuzz=FuzzBitFlipDetected -fuzztime=$(FUZZTIME) ./internal/checkpoint
+	go test -run='^$$' -fuzz=FuzzRandomBytesNoPanic -fuzztime=$(FUZZTIME) ./internal/checkpoint
+
+# Coverage gate: enforces minimum total coverage. Floor lifts +5pp over the
+# layer-0 baseline (32.9%) to 37.9%.
+COVERAGE_FLOOR ?= 37.9
+coverage-gate:
+	@CGO_ENABLED=1 go test -count=1 -coverprofile=coverage.out ./... >/dev/null
+	@total=$$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%$$/, "", $$3); print $$3}'); \
+	  awk -v t="$$total" -v f="$(COVERAGE_FLOOR)" 'BEGIN { if (t+0 < f+0) { printf("coverage %s%% below floor %s%%\n", t, f); exit 1 } else { printf("coverage %s%% >= floor %s%%\n", t, f) } }'
 
 chaos:
 	bench/chaos.sh
