@@ -102,22 +102,23 @@ var (
 
 // Job is the row representation of a managed job.
 type Job struct {
-	ID                  string
-	Image               string
-	Command             string
-	Args                []string
-	State               State
-	CreatedAt           time.Time
-	StartedAt           *time.Time
-	FinishedAt          *time.Time
-	ExitCode            *int
-	LastCheckpointAt    *time.Time
-	LastCheckpointPath  *string
-	LastCheckpointEpoch *int64
-	LastCheckpointFound *int64
-	ContainerID         *string
-	ControllerPID       *int
-	StateVolumePath     *string
+	ID                   string
+	Image                string
+	Command              string
+	Args                 []string
+	State                State
+	CreatedAt            time.Time
+	StartedAt            *time.Time
+	FinishedAt           *time.Time
+	ExitCode             *int
+	LastCheckpointAt     *time.Time
+	LastCheckpointPath   *string
+	LastCheckpointEpoch  *int64
+	LastCheckpointFound  *int64
+	ContainerID          *string
+	ControllerPID        *int
+	StateVolumePath      *string
+	AssignedControllerID *string
 }
 
 // Event is the row representation of a job event.
@@ -152,6 +153,15 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	// Additive migration: pre-v3 databases were created without the
+	// assigned_controller_id column. ALTER fails idempotently with a
+	// "duplicate column" error which we treat as success.
+	if _, err := db.Exec(`ALTER TABLE jobs ADD COLUMN assigned_controller_id TEXT`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate assigned_controller_id: %w", err)
+		}
 	}
 	return &Store{db: db, clock: time.Now}, nil
 }
@@ -201,7 +211,8 @@ func (s *Store) GetJob(ctx context.Context, id string) (*Job, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, image, command, args_json, state, created_at, started_at, finished_at,
 		       exit_code, last_checkpoint_at, last_checkpoint_path, last_checkpoint_epoch,
-		       last_checkpoint_found, container_id, controller_pid, state_volume_path
+		       last_checkpoint_found, container_id, controller_pid, state_volume_path,
+		       assigned_controller_id
 		FROM jobs WHERE id = ?
 	`, id)
 	return scanJob(row)
@@ -215,7 +226,8 @@ func (s *Store) ListJobs(ctx context.Context, state State, afterID string, limit
 	}
 	q := `SELECT id, image, command, args_json, state, created_at, started_at, finished_at,
 	             exit_code, last_checkpoint_at, last_checkpoint_path, last_checkpoint_epoch,
-	             last_checkpoint_found, container_id, controller_pid, state_volume_path
+	             last_checkpoint_found, container_id, controller_pid, state_volume_path,
+	             assigned_controller_id
 	      FROM jobs`
 	clauses := []string{}
 	args := []any{}
@@ -421,7 +433,8 @@ func (s *Store) JobsInStates(ctx context.Context, states ...State) ([]Job, error
 	}
 	q := `SELECT id, image, command, args_json, state, created_at, started_at, finished_at,
 	             exit_code, last_checkpoint_at, last_checkpoint_path, last_checkpoint_epoch,
-	             last_checkpoint_found, container_id, controller_pid, state_volume_path
+	             last_checkpoint_found, container_id, controller_pid, state_volume_path,
+	             assigned_controller_id
 	      FROM jobs WHERE state IN (` + strings.Join(placeholders, ",") + `)
 	      ORDER BY created_at ASC`
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -453,13 +466,13 @@ func scanJob(rs rowScanner) (*Job, error) {
 	var createdAt int64
 	var startedAt, finishedAt, ckptAt sql.NullInt64
 	var exitCode sql.NullInt64
-	var ckptPath, containerID, volumePath, command sql.NullString
+	var ckptPath, containerID, volumePath, command, assignedCtl sql.NullString
 	var ckptEpoch, ckptFound sql.NullInt64
 	var controllerPID sql.NullInt64
 
 	err := rs.Scan(&j.ID, &j.Image, &command, &argsJSON, &state, &createdAt,
 		&startedAt, &finishedAt, &exitCode, &ckptAt, &ckptPath, &ckptEpoch,
-		&ckptFound, &containerID, &controllerPID, &volumePath)
+		&ckptFound, &containerID, &controllerPID, &volumePath, &assignedCtl)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -509,6 +522,10 @@ func scanJob(rs rowScanner) (*Job, error) {
 		s := volumePath.String
 		j.StateVolumePath = &s
 	}
+	if assignedCtl.Valid {
+		s := assignedCtl.String
+		j.AssignedControllerID = &s
+	}
 	if err := json.Unmarshal([]byte(argsJSON), &j.Args); err != nil {
 		return nil, fmt.Errorf("decode args: %w", err)
 	}
@@ -537,7 +554,8 @@ func redactedUpdates(u map[string]any) map[string]any {
 	for k, v := range u {
 		switch k {
 		case "state", "exit_code", "container_id", "last_checkpoint_epoch",
-			"last_checkpoint_found", "started_at", "finished_at":
+			"last_checkpoint_found", "started_at", "finished_at",
+			"assigned_controller_id":
 			out[k] = v
 		}
 	}

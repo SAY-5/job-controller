@@ -1,21 +1,28 @@
 CREATE TABLE IF NOT EXISTS jobs (
-  id                    TEXT PRIMARY KEY,
-  image                 TEXT NOT NULL,
-  command               TEXT NOT NULL,
-  args_json             TEXT NOT NULL,
-  state                 TEXT NOT NULL,
-  created_at            INTEGER NOT NULL,
-  started_at            INTEGER,
-  finished_at           INTEGER,
-  exit_code             INTEGER,
-  last_checkpoint_at    INTEGER,
-  last_checkpoint_path  TEXT,
-  last_checkpoint_epoch INTEGER,
-  last_checkpoint_found INTEGER,
-  container_id          TEXT,
-  controller_pid        INTEGER,
-  state_volume_path     TEXT
+  id                     TEXT PRIMARY KEY,
+  image                  TEXT NOT NULL,
+  command                TEXT NOT NULL,
+  args_json              TEXT NOT NULL,
+  state                  TEXT NOT NULL,
+  created_at             INTEGER NOT NULL,
+  started_at             INTEGER,
+  finished_at            INTEGER,
+  exit_code              INTEGER,
+  last_checkpoint_at     INTEGER,
+  last_checkpoint_path   TEXT,
+  last_checkpoint_epoch  INTEGER,
+  last_checkpoint_found  INTEGER,
+  container_id           TEXT,
+  controller_pid         INTEGER,
+  state_volume_path      TEXT,
+  assigned_controller_id TEXT
 );
+
+-- Best-effort additive migration for databases created before the
+-- assigned_controller_id column was introduced. SQLite ignores the
+-- statement if the column already exists (this single-statement form
+-- generates a no-op error which we swallow at apply time, see store.Open).
+-- We keep the line here so a fresh `:memory:` boot still gets the column.
 
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at);

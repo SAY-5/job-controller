@@ -22,12 +22,24 @@ import (
 	"github.com/SAY-5/job-controller/internal/store"
 )
 
+// LeaderCheck returns true when this controller is the cluster leader and
+// is allowed to write new state (start workers, transition jobs). When
+// nil, the supervisor behaves as if it is always leader, which is the
+// single-controller default.
+type LeaderCheck func() bool
+
+// ErrNotLeader is returned by Start when the supervisor is in follower mode.
+var ErrNotLeader = errors.New("supervisor: not leader")
+
 // Supervisor manages active jobs.
 type Supervisor struct {
 	cfg    config.Config
 	st     *store.Store
 	docker *docker.Client
 	pid    int
+
+	leaderCheck  LeaderCheck
+	controllerID string
 
 	mu      sync.Mutex
 	tracked map[string]*tracker
@@ -52,13 +64,35 @@ func New(cfg config.Config, st *store.Store, dockerClient *docker.Client) *Super
 	}
 }
 
+// SetLeaderCheck installs a leader-gating callback. When the callback
+// returns false, Start refuses with ErrNotLeader -- preventing the
+// follower controller from racing the leader and spawning duplicate
+// worker containers for the same job.
+func (s *Supervisor) SetLeaderCheck(controllerID string, check LeaderCheck) {
+	s.controllerID = controllerID
+	s.leaderCheck = check
+}
+
+// ControllerID returns the cluster identity assigned via SetLeaderCheck,
+// or the empty string for single-node deployments.
+func (s *Supervisor) ControllerID() string { return s.controllerID }
+
 // PID returns the controller PID. Exposed so labels match.
 func (s *Supervisor) PID() int { return s.pid }
 
 // Start launches a worker container for the job and begins streaming.
 // The job must be in `pending` (fresh launch) or `interrupted_resumable`
 // (resume). On success the job moves to `running`.
+//
+// In HA mode (SetLeaderCheck called), only the leader is allowed to
+// start. Followers receive ErrNotLeader; the API surfaces this so callers
+// can retry against the current leader. Additionally the assigned
+// controller id is recorded on the job row so reaper logic can detect
+// stale assignments after a failover.
 func (s *Supervisor) Start(ctx context.Context, jobID string) error {
+	if s.leaderCheck != nil && !s.leaderCheck() {
+		return ErrNotLeader
+	}
 	job, err := s.st.GetJob(ctx, jobID)
 	if err != nil {
 		return err
@@ -118,6 +152,9 @@ func (s *Supervisor) Start(ctx context.Context, jobID string) error {
 		u["container_id"] = containerID
 		u["controller_pid"] = s.pid
 		u["state_volume_path"] = hostStateFile
+		if s.controllerID != "" {
+			u["assigned_controller_id"] = s.controllerID
+		}
 	}); err != nil {
 		_ = s.docker.Remove(context.Background(), containerID)
 		return err

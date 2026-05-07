@@ -142,10 +142,75 @@ We don't ship that wiring because it requires privileged access and
 hardware that the CI runner doesn't have. The chaos test exercises the
 SIGTERM and SIGKILL paths, which use the same shutdown plumbing.
 
+## Cluster mode (HA leader election)
+
+When `JOBCTL_REDIS_ADDR` is set the controller joins a Redis-backed
+leader-election ring. Multiple controllers can run against the same
+backing store; exactly one holds the lease and is allowed to schedule or
+reap. The followers stand by, poll the lease every `JOBCTL_LEASE_POLL`
+seconds (default 5s), and pick up the lease when the leader's hold
+expires.
+
+### Lock semantics
+
+Acquire is `SET <ClusterKey> <ControllerID> NX EX <LeaseTTL>` (default
+key `cb:leader:lock`, default TTL 30s). Refresh and Release are guarded
+by Lua compare-and-swap snippets so a partitioned former leader cannot
+steal the lease back from a new holder:
+
+```lua
+-- refresh
+if redis.call('GET', KEYS[1]) == ARGV[1]
+then return redis.call('EXPIRE', KEYS[1], ARGV[2])
+else return 0 end
+
+-- release
+if redis.call('GET', KEYS[1]) == ARGV[1]
+then return redis.call('DEL', KEYS[1])
+else return 0 end
+```
+
+The Locker interface in `internal/cluster/cluster.go` lets tests swap in
+an in-memory locker with the same observable semantics; the integration
+test under `internal/cluster/integration_test.go` runs two electors
+against a shared in-memory locker, asserts exactly one becomes leader at
+boot, kills the leader, and verifies the survivor takes over within the
+configured SLA without producing a duplicate worker spawn.
+
+### Failover SLA
+
+Worst-case failover latency = `LeaseTTL + PollEvery`. With the spec
+defaults (30s + 5s) the deterministic upper bound is 35s; observed
+failover in the integration test (lease=2s, poll=0.25s) is well under
+500ms. The 30s SLA in the layer-3 contract is met by the default
+configuration.
+
+### Job ownership and write gating
+
+The `jobs` table grew an `assigned_controller_id` column. The leader
+records its identity on the row whenever it transitions a job into
+`running`. Followers can read job state freely (the API still serves
+`GET /v1/jobs/...` from any controller) but `Supervisor.Start` returns
+`supervisor.ErrNotLeader` on a follower; the API surface no-ops the
+`POST /v1/jobs` background spawn in that case so the request still gets
+a 202 reply but the eventual scheduling waits for the leader. After a
+failover the new leader's recovery scan picks up any orphaned `running`
+rows whose `assigned_controller_id` differs from its own and reattaches
+or restarts them via the same protocol the single-node design already
+uses.
+
+### What this does NOT do
+
+- **No exactly-once delivery.** If a follower received a job and the
+  leader hadn't yet started it, the job remains in `pending` until the
+  next leader's recovery scan picks it up. Clients should still dedupe
+  with their own request IDs across retries.
+- **No multi-leader.** This is a single-leader model with stand-by
+  followers. Sharding (multiple leaders, each owning a slice of the
+  job-id space) would be a separate feature.
+
 ## What's deliberately not here
 
-- **No leader election.** A second controller pointed at the same SQLite
-  file would corrupt the WAL.
 - **No exactly-once at the API.** A `POST /v1/jobs` retry creates a
   fresh job; clients are expected to dedupe with their own request IDs.
 - **No streaming job output.** The supervisor's NDJSON log is not
@@ -166,6 +231,7 @@ internal/store/schema.sql  - DDL (embedded into the binary)
 internal/docker/client.go  - docker CLI wrapper (run/inspect/stop/ps/logs)
 internal/supervisor/*      - per-job goroutine
 internal/recovery/*        - startup reconciler
+internal/cluster/*         - leader election (Redis + in-memory backends)
 internal/signals/*         - SIGTERM / SIGHUP / SIGUSR1
 worker/src/compute.cpp     - deterministic streaming sieve
 worker/src/checkpoint.cpp  - CRC32 + length-prefix framing

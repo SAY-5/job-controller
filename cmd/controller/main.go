@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SAY-5/job-controller/internal/api"
+	"github.com/SAY-5/job-controller/internal/cluster"
 	"github.com/SAY-5/job-controller/internal/config"
 	"github.com/SAY-5/job-controller/internal/docker"
 	"github.com/SAY-5/job-controller/internal/recovery"
@@ -39,6 +42,35 @@ func main() {
 	}
 
 	sup := supervisor.New(cfg, st, dc)
+
+	// HA / leader election: if a Redis address is configured the
+	// controller joins the cluster ring and only schedules when leader.
+	// Without a Redis address the supervisor's leaderCheck stays nil
+	// and the controller behaves as a standalone single-node instance.
+	ctxRoot, cancelRoot := context.WithCancel(context.Background())
+	defer cancelRoot()
+	if cfg.RedisAddr != "" {
+		ctlID := cfg.ControllerID
+		if ctlID == "" {
+			b := make([]byte, 4)
+			_, _ = rand.Read(b)
+			ctlID = "ctl-" + hex.EncodeToString(b)
+		}
+		locker := cluster.NewRedisLocker(cfg.RedisAddr)
+		electCfg := cluster.Config{
+			Key:          cfg.ClusterKey,
+			ControllerID: ctlID,
+			LeaseTTL:     cfg.LeaseTTL,
+			RefreshEvery: cfg.RefreshEvery,
+			PollEvery:    cfg.PollEvery,
+		}
+		elector := cluster.New(electCfg, locker,
+			func() { log.Printf("controller: became leader id=%s", ctlID) },
+			func() { log.Printf("controller: lost leadership id=%s", ctlID) })
+		sup.SetLeaderCheck(ctlID, elector.IsLeader)
+		go elector.Run(ctxRoot)
+		log.Printf("controller: HA mode redis=%s id=%s lease=%s", cfg.RedisAddr, ctlID, cfg.LeaseTTL)
+	}
 
 	// Recovery scan: re-attach orphans, mark dead jobs.
 	rec := recovery.New(st, dc, sup)

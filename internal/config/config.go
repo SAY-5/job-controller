@@ -34,6 +34,17 @@ type Config struct {
 
 	// Whether to skip Docker (used by unit tests; the real binary keeps it false).
 	NoDocker bool
+
+	// HA / cluster mode (layer v3). When RedisAddr is set the controller
+	// joins a leader-election ring keyed by ClusterKey; only the leader
+	// schedules and reaps. ControllerID identifies this process; if
+	// empty, a stable random id is generated at boot.
+	RedisAddr    string
+	ClusterKey   string
+	ControllerID string
+	LeaseTTL     time.Duration
+	RefreshEvery time.Duration
+	PollEvery    time.Duration
 }
 
 func Load() Config {
@@ -46,6 +57,12 @@ func Load() Config {
 		GracePeriod:     envDur("JOBCTL_GRACE_PERIOD", 30*time.Second),
 		ReconcileEvery:  envDur("JOBCTL_RECONCILE_EVERY", 10*time.Second),
 		NoDocker:        envBool("JOBCTL_NO_DOCKER", false),
+		RedisAddr:       envOr("JOBCTL_REDIS_ADDR", ""),
+		ClusterKey:      envOr("JOBCTL_CLUSTER_KEY", "cb:leader:lock"),
+		ControllerID:    envOr("JOBCTL_CONTROLLER_ID", ""),
+		LeaseTTL:        envDur("JOBCTL_LEASE_TTL", 30*time.Second),
+		RefreshEvery:    envDur("JOBCTL_LEASE_REFRESH", 10*time.Second),
+		PollEvery:       envDur("JOBCTL_LEASE_POLL", 5*time.Second),
 	}
 }
 

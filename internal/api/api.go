@@ -175,6 +175,12 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		bg := context.Background()
 		if err := s.supervisor.Start(bg, id); err != nil {
+			// In HA mode a follower controller will return ErrNotLeader;
+			// don't flip the job to failed -- the leader (or the next
+			// failover winner) will pick it up on its recovery scan.
+			if errors.Is(err, supervisor.ErrNotLeader) {
+				return
+			}
 			// Failure to launch flips the job to failed for visibility.
 			_ = s.store.Transition(bg, id, store.StateFailed, func(u map[string]any) {
 				u["exit_code"] = -1
