@@ -98,3 +98,7 @@ jobs:
             bench/runtime/chaos-result.json
             bench/runtime/controller.log
             bench/runtime/controller.restart.log
+            bench/runtime/ref.bin
+            bench/runtime/state/**/state.bin
+            bench/runtime/job-state.bin
+            bench/runtime/ref-state.bin

@@ -170,12 +170,27 @@ wait_state "${JOB_ID}" "completed" 180
 T_COMPLETE=$(date +%s)
 
 # Compare the persisted worker state against the reference state.
-JOB_STATE_PATH=$(find "${STATE_DIR}/${JOB_ID}" -name 'state.bin' -print -quit)
+JOB_STATE_PATH=$(find "${STATE_DIR}/${JOB_ID}" -name 'state.bin' -print -quit 2>/dev/null || true)
 DETERMINISTIC=true
 JOB_FOUND=$(job_field "${JOB_ID}" last_checkpoint_found)
-if [[ "${JOB_FOUND}" != "${REF_FOUND}" ]]; then DETERMINISTIC=false; fi
-if [[ -n "${JOB_STATE_PATH}" && -f "${JOB_STATE_PATH}" ]]; then
-  if ! cmp -s "${JOB_STATE_PATH}" "${REF_STATE}"; then DETERMINISTIC=false; fi
+if [[ "${JOB_FOUND}" != "${REF_FOUND}" ]]; then
+  DETERMINISTIC=false
+  echo "[chaos] divergence: job_found=${JOB_FOUND} ref_found=${REF_FOUND}" >&2
+fi
+if [[ -z "${JOB_STATE_PATH}" || ! -f "${JOB_STATE_PATH}" ]]; then
+  # Bind-mount round-trip is required for the byte comparison; fail loudly
+  # rather than silently passing.
+  DETERMINISTIC=false
+  echo "[chaos] divergence: missing job state file under ${STATE_DIR}/${JOB_ID}" >&2
+elif ! cmp -s "${JOB_STATE_PATH}" "${REF_STATE}"; then
+  DETERMINISTIC=false
+  echo "[chaos] divergence: state files differ" >&2
+  echo "[chaos] reference (${REF_STATE}):" >&2
+  xxd "${REF_STATE}" | head -20 >&2 || true
+  echo "[chaos] job (${JOB_STATE_PATH}):" >&2
+  xxd "${JOB_STATE_PATH}" | head -20 >&2 || true
+  cp "${JOB_STATE_PATH}" "${RUNTIME}/job-state.bin" || true
+  cp "${REF_STATE}" "${RUNTIME}/ref-state.bin" || true
 fi
 
 cat > "${RESULT}" <<JSON
