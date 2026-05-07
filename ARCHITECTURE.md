@@ -106,9 +106,15 @@ two final state files.
 The state file format is documented in `worker/src/checkpoint.h`:
 
 - 4-byte magic `JOBC` (`0x4A4F4243`) + 4-byte version
-- Sieve cursor + counters (5 little-endian u64s, 1 u8 sentinel)
+- Sieve cursor + counters (3 little-endian u64s + 1 u8 sentinel)
 - Length-prefixed `recent` ring of recently-discovered primes
 - Trailing CRC32 (IEEE 802.3, reflected) over all preceding bytes
+
+`epoch` is intentionally **not** persisted. It is an in-process emission
+counter used for log correlation, and excluding it is what makes the
+chaos test's byte-identical comparison meaningful: a resumed worker emits
+its own epoch sequence (starting from 1) without that history bleeding
+into the persisted state.
 
 The write path is atomic: write to `path.tmp`, `fsync`, `rename`. A
 crash mid-write leaves a stale `.tmp` next to a still-valid `path`. The

@@ -22,12 +22,12 @@ std::string tmp_path(const std::string& tag) {
 
 }  // namespace
 
-TEST(Checkpoint, RoundtripPreservesAllFields) {
+TEST(Checkpoint, RoundtripPreservesComputeFields) {
   SieveState s;
   s.limit = 1000;
   s.next = 17;
   s.found = 6;
-  s.epoch = 3;
+  s.epoch = 3;  // intentionally non-zero; epoch is NOT persisted
   s.seeded_two = true;
   s.recent = {2, 3, 5, 7, 11, 13};
 
@@ -38,7 +38,8 @@ TEST(Checkpoint, RoundtripPreservesAllFields) {
   EXPECT_EQ(got.limit, s.limit);
   EXPECT_EQ(got.next, s.next);
   EXPECT_EQ(got.found, s.found);
-  EXPECT_EQ(got.epoch, s.epoch);
+  // Epoch is deliberately reset on read; the determinism contract excludes it.
+  EXPECT_EQ(got.epoch, 0u);
   EXPECT_EQ(got.seeded_two, s.seeded_two);
   EXPECT_EQ(std::vector<std::uint64_t>(got.recent.begin(), got.recent.end()),
             std::vector<std::uint64_t>(s.recent.begin(), s.recent.end()));

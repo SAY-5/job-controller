@@ -69,7 +69,6 @@ void write_state(const std::string& path, const SieveState& state) {
   put_u64(buf, state.limit);
   put_u64(buf, state.next);
   put_u64(buf, state.found);
-  put_u64(buf, state.epoch);
   buf.push_back(state.seeded_two ? 1 : 0);
   put_u32(buf, static_cast<std::uint32_t>(state.recent.size()));
   for (auto p : state.recent) put_u64(buf, p);
@@ -114,7 +113,8 @@ SieveState read_state(const std::string& path) {
   }
   std::vector<std::uint8_t> all((std::istreambuf_iterator<char>(in)),
                                 std::istreambuf_iterator<char>());
-  if (all.size() < 4 + 4 + 8 * 4 + 1 + 4 + 4) {
+  // header: 4 magic + 4 version + 3*u64 (limit/next/found) + 1 u8 + 4 u32 + 4 crc
+  if (all.size() < 4 + 4 + 8 * 3 + 1 + 4 + 4) {
     throw CheckpointError(CheckpointError::Kind::kTooShort, "file too short");
   }
 
@@ -142,8 +142,8 @@ SieveState read_state(const std::string& path) {
   p += 8;
   s.found = get_u64(p);
   p += 8;
-  s.epoch = get_u64(p);
-  p += 8;
+  // epoch is not persisted; resumed run starts emitting from epoch 1.
+  s.epoch = 0;
   s.seeded_two = (*p++ != 0);
   std::uint32_t rc = get_u32(p);
   p += 4;
