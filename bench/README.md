@@ -1,4 +1,28 @@
-# Chaos tests
+# Bench + chaos harnesses
+
+This directory holds the throughput / latency bench, the bench-regress
+gate, and the two chaos scripts that exercise the recovery contract.
+
+## Concurrent bench (`bench/concurrent`)
+
+Spawns N worker subprocesses concurrently and reports submit-to-complete
+latency P50/P95/P99, throughput, and harness memory footprint.
+
+```bash
+make bench           # full N=1000 run, output -> bench/results/<ts>.json
+make bench-smoke     # N=20 smoke (CI runs this on every push)
+make bench-regress   # diff bench/results/latest.json vs bench/baseline.json
+```
+
+The result JSON also lands at `bench/results/latest.json` so the
+`bench-regress` gate can compare against the committed `bench/baseline.json`
+floor without needing to know the timestamp.
+
+`bench/baseline.json` is intentionally generous (CI runners are slower
+than developer laptops). Numbers represent the WORST acceptable values;
+violations fail the gate. Update it when an intentional regression lands.
+
+## Chaos tests
 
 Two scripts that exercise the crash/recovery contract end to end. Both
 require:

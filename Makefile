@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: dev build build-go build-cpp test test-go test-cpp lint lint-go lint-cpp chaos chaos-sigterm fuzz coverage-gate up clean
+.PHONY: dev build build-go build-cpp test test-go test-cpp lint lint-go lint-cpp chaos chaos-sigterm fuzz coverage-gate bench bench-smoke bench-regress up clean
 
 # Local dev build (Go binaries + C++ worker)
 dev: build
@@ -55,9 +55,37 @@ fuzz:
 # layer-0 baseline (32.9%) to 37.9%.
 COVERAGE_FLOOR ?= 37.9
 coverage-gate:
-	@CGO_ENABLED=1 go test -count=1 -coverprofile=coverage.out ./... >/dev/null
+	@CGO_ENABLED=1 go test -count=1 -coverprofile=coverage.out ./internal/... >/dev/null
 	@total=$$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%$$/, "", $$3); print $$3}'); \
 	  awk -v t="$$total" -v f="$(COVERAGE_FLOOR)" 'BEGIN { if (t+0 < f+0) { printf("coverage %s%% below floor %s%%\n", t, f); exit 1 } else { printf("coverage %s%% >= floor %s%%\n", t, f) } }'
+
+# 1000-job concurrent bench. Spawns N=1000 worker subprocesses, measures
+# submit-to-complete latency P50/P95/P99 and throughput. Output JSON lands
+# in bench/results/<timestamp>.json plus bench/results/latest.json.
+BENCH_N ?= 1000
+BENCH_CONC ?= 64
+BENCH_LIMIT ?= 10000
+BENCH_EVERY ?= 1000
+bench: build-cpp
+	@mkdir -p bin bench/results
+	go build -o bin/concurrent_bench ./bench/concurrent
+	./bin/concurrent_bench -n $(BENCH_N) -concurrency $(BENCH_CONC) -limit $(BENCH_LIMIT) \
+	  -checkpoint-every $(BENCH_EVERY) -worker worker/build/jobworker -out-dir bench/results
+
+# CI smoke at N=20 -- proves the bench harness works without paying the
+# price of a full 1000-job run on every push.
+bench-smoke: build-cpp
+	@mkdir -p bin bench/results
+	go build -o bin/concurrent_bench ./bench/concurrent
+	./bin/concurrent_bench -n 20 -concurrency 8 -limit $(BENCH_LIMIT) \
+	  -checkpoint-every $(BENCH_EVERY) -worker worker/build/jobworker -out-dir bench/results
+
+# bench-regress gate: compare bench/results/latest.json to bench/baseline.json
+# and exit non-zero on regression.
+bench-regress:
+	@mkdir -p bin
+	go build -o bin/bench_regress ./bench/regress
+	./bin/bench_regress
 
 chaos:
 	bench/chaos.sh

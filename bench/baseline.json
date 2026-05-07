@@ -1,0 +1,8 @@
+{
+  "_comment": "Bench-regress floor. Numbers represent the WORST acceptable values; the gate fails if the latest run is worse than these. Tuned for ubuntu-latest CI runners running the N=20 smoke; updated when intentional regressions land.",
+  "min_jobs_per_sec": 50,
+  "max_p50_ms": 2000,
+  "max_p95_ms": 4000,
+  "max_p99_ms": 6000,
+  "max_failures": 0
+}

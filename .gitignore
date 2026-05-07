@@ -21,6 +21,7 @@ build/
 bench/runtime/
 bench/runtime-sigterm/
 bench/work/
+bench/results/
 *.pid
 
 # Editor / OS
