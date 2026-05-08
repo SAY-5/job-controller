@@ -20,6 +20,13 @@ type Config struct {
 	// Default Docker image used when a job omits one.
 	DefaultImage string
 
+	// DefaultImageOverridden is true when JOBCTL_WORKER_IMAGE was explicitly
+	// set in the environment. The API uses this as a signal to prefer the
+	// env-driven image over per-worker registry defaults, so operator/CI
+	// overrides (e.g. jobctl/worker:dev) keep working after the v4 registry
+	// refactor.
+	DefaultImageOverridden bool
+
 	// Path inside the worker container where the state file is materialized.
 	WorkerStatePath string
 
@@ -48,21 +55,28 @@ type Config struct {
 }
 
 func Load() Config {
+	imgEnv, imgSet := os.LookupEnv("JOBCTL_WORKER_IMAGE")
+	defaultImage := imgEnv
+	imgOverridden := imgSet && imgEnv != ""
+	if !imgOverridden {
+		defaultImage = "jobctl/worker:latest"
+	}
 	return Config{
-		Listen:          envOr("JOBCTL_LISTEN", ":8080"),
-		DBPath:          envOr("JOBCTL_DB", "/var/lib/jobctl/jobs.db"),
-		DefaultImage:    envOr("JOBCTL_WORKER_IMAGE", "jobctl/worker:latest"),
-		WorkerStatePath: envOr("JOBCTL_WORKER_STATE_PATH", "/state/state.bin"),
-		HostStateDir:    envOr("JOBCTL_HOST_STATE_DIR", "/var/lib/jobctl/state"),
-		GracePeriod:     envDur("JOBCTL_GRACE_PERIOD", 30*time.Second),
-		ReconcileEvery:  envDur("JOBCTL_RECONCILE_EVERY", 10*time.Second),
-		NoDocker:        envBool("JOBCTL_NO_DOCKER", false),
-		RedisAddr:       envOr("JOBCTL_REDIS_ADDR", ""),
-		ClusterKey:      envOr("JOBCTL_CLUSTER_KEY", "cb:leader:lock"),
-		ControllerID:    envOr("JOBCTL_CONTROLLER_ID", ""),
-		LeaseTTL:        envDur("JOBCTL_LEASE_TTL", 30*time.Second),
-		RefreshEvery:    envDur("JOBCTL_LEASE_REFRESH", 10*time.Second),
-		PollEvery:       envDur("JOBCTL_LEASE_POLL", 5*time.Second),
+		Listen:                 envOr("JOBCTL_LISTEN", ":8080"),
+		DBPath:                 envOr("JOBCTL_DB", "/var/lib/jobctl/jobs.db"),
+		DefaultImage:           defaultImage,
+		DefaultImageOverridden: imgOverridden,
+		WorkerStatePath:        envOr("JOBCTL_WORKER_STATE_PATH", "/state/state.bin"),
+		HostStateDir:           envOr("JOBCTL_HOST_STATE_DIR", "/var/lib/jobctl/state"),
+		GracePeriod:            envDur("JOBCTL_GRACE_PERIOD", 30*time.Second),
+		ReconcileEvery:         envDur("JOBCTL_RECONCILE_EVERY", 10*time.Second),
+		NoDocker:               envBool("JOBCTL_NO_DOCKER", false),
+		RedisAddr:              envOr("JOBCTL_REDIS_ADDR", ""),
+		ClusterKey:             envOr("JOBCTL_CLUSTER_KEY", "cb:leader:lock"),
+		ControllerID:           envOr("JOBCTL_CONTROLLER_ID", ""),
+		LeaseTTL:               envDur("JOBCTL_LEASE_TTL", 30*time.Second),
+		RefreshEvery:           envDur("JOBCTL_LEASE_REFRESH", 10*time.Second),
+		PollEvery:              envDur("JOBCTL_LEASE_POLL", 5*time.Second),
 	}
 }
 

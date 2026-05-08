@@ -93,6 +93,12 @@ func (s *Supervisor) Start(ctx context.Context, jobID string) error {
 	if s.leaderCheck != nil && !s.leaderCheck() {
 		return ErrNotLeader
 	}
+	if s.docker == nil {
+		// JOBCTL_NO_DOCKER mode (used by unit tests). The supervisor cannot
+		// launch containers without a docker client, so fail explicitly
+		// instead of nil-deref panicking inside docker.Run.
+		return fmt.Errorf("supervisor.Start: no docker client (JOBCTL_NO_DOCKER)")
+	}
 	job, err := s.st.GetJob(ctx, jobID)
 	if err != nil {
 		return err

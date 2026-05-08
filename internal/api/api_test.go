@@ -145,3 +145,94 @@ func contains(xs []string, want string) bool {
 	}
 	return false
 }
+
+// Regression: an explicit JOBCTL_WORKER_IMAGE override (i.e. cfg.DefaultImage
+// with DefaultImageOverridden=true) must beat the registry's per-worker image.
+// Pre-fix the registry's "jobctl/worker:latest" silently masked CI's
+// "jobctl/worker:dev" override, breaking chaos-smoke.
+func TestCreateJobRespectsDefaultImageOverride(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "jobs.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	cfg := config.Config{
+		Listen:                 ":0",
+		DBPath:                 ":memory:",
+		DefaultImage:           "jobctl/worker:dev",
+		DefaultImageOverridden: true,
+		WorkerStatePath:        "/state/state.bin",
+		HostStateDir:           dir,
+		NoDocker:               true,
+	}
+	sup := supervisor.New(cfg, st, nil)
+	s := NewServer(cfg, st, nil, sup, nil)
+
+	body := strings.NewReader(`{"limit":1000,"checkpoint_every":100}`)
+	r := httptest.NewRequest(http.MethodPost, "/v1/jobs", body)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	job, err := st.GetJob(context.Background(), resp.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if job.Image != "jobctl/worker:dev" {
+		t.Fatalf("image = %q, want jobctl/worker:dev (env override must beat registry)", job.Image)
+	}
+}
+
+// When no env override is set, the registry's per-worker image wins. This
+// preserves the v4 design intent for the multi-worker matmul / wordcount flows.
+func TestCreateJobUsesRegistryImageWhenNoOverride(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "jobs.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	cfg := config.Config{
+		Listen:                 ":0",
+		DBPath:                 ":memory:",
+		DefaultImage:           "jobctl/worker:latest",
+		DefaultImageOverridden: false,
+		WorkerStatePath:        "/state/state.bin",
+		HostStateDir:           dir,
+		NoDocker:               true,
+	}
+	sup := supervisor.New(cfg, st, nil)
+	s := NewServer(cfg, st, nil, sup, nil)
+
+	body := strings.NewReader(`{"limit":1000,"checkpoint_every":100}`)
+	r := httptest.NewRequest(http.MethodPost, "/v1/jobs", body)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	job, err := st.GetJob(context.Background(), resp.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	// Default registry's primes worker uses jobctl/worker:latest.
+	if job.Image != "jobctl/worker:latest" {
+		t.Fatalf("image = %q, want jobctl/worker:latest from registry default", job.Image)
+	}
+}

@@ -163,10 +163,19 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Image precedence:
+	//   1. explicit req.Image
+	//   2. cfg.DefaultImage when JOBCTL_WORKER_IMAGE was set (operator/CI override)
+	//   3. registry's per-worker image
+	//   4. cfg.DefaultImage as final fallback
 	image := req.Image
 	if image == "" {
-		image = worker.Image
-		if image == "" {
+		switch {
+		case s.cfg.DefaultImageOverridden:
+			image = s.cfg.DefaultImage
+		case worker.Image != "":
+			image = worker.Image
+		default:
 			image = s.cfg.DefaultImage
 		}
 	}
