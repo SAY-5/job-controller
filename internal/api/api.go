@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -215,7 +216,7 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(err, supervisor.ErrNotLeader) {
 				return
 			}
-			// Failure to launch flips the job to failed for visibility.
+			log.Printf("api: supervisor.Start(%s) failed: %v", id, err)
 			_ = s.store.Transition(bg, id, store.StateFailed, func(u map[string]any) {
 				u["exit_code"] = -1
 			})

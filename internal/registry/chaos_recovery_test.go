@@ -22,10 +22,6 @@ import (
 	"time"
 )
 
-const (
-	checkpointEvery = 10
-)
-
 func findWorkerBinary(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
